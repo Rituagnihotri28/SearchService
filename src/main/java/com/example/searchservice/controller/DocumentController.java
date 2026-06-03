@@ -50,26 +50,48 @@ public class DocumentController {
         return ResponseEntity.ok(Map.of("query", query, "tenantId", resolvedTenant, "results", service.search(resolvedTenant, query)));
     }
 
-    /** Returns a single document by its identifier. */
+    /** Returns a single document by its identifier for the current tenant only. */
     @GetMapping("/documents/{id}")
-    public ResponseEntity<?> get(@PathVariable UUID id) {
-        return service.getById(id)
+    public ResponseEntity<?> get(@PathVariable UUID id,
+                                 @RequestParam(value = "tenant", required = false) String tenantId,
+                                 @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader) {
+        String resolvedTenant = tenantId != null && !tenantId.isBlank() ? tenantId : tenantHeader;
+        if (resolvedTenant == null || resolvedTenant.isBlank()) {
+            resolvedTenant = "default";
+        }
+
+        return service.getById(id, resolvedTenant)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
-    /** Deletes an indexed document by identifier. */
+    /** Deletes an indexed document by identifier for the current tenant only. */
     @DeleteMapping("/documents/{id}")
-    public ResponseEntity<?> delete(@PathVariable UUID id) {
-        return service.delete(id)
+    public ResponseEntity<?> delete(@PathVariable UUID id,
+                                    @RequestParam(value = "tenant", required = false) String tenantId,
+                                    @RequestHeader(value = "X-Tenant-Id", required = false) String tenantHeader) {
+        String resolvedTenant = tenantId != null && !tenantId.isBlank() ? tenantId : tenantHeader;
+        if (resolvedTenant == null || resolvedTenant.isBlank()) {
+            resolvedTenant = "default";
+        }
+
+        return service.delete(id, resolvedTenant)
                 ? ResponseEntity.ok(Map.of("status", "deleted", "id", id.toString()))
                 : ResponseEntity.notFound().build();
     }
 
     /** Returns the current health status and dependency checks. */
-    @GetMapping("/health")
+    @GetMapping({"/health", "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness"})
     public ResponseEntity<?> health() {
-        return ResponseEntity.ok(Map.of("status", "ok", "dependencies", service.health()));
+        return ResponseEntity.ok(Map.of(
+                "status", "ok",
+                "dependencies", service.health(),
+                "endpoints", Map.of(
+                        "health", "/health",
+                        "liveness", "/actuator/health/liveness",
+                        "readiness", "/actuator/health/readiness"
+                )
+        ));
     }
 
     public record DocumentRequest(@NotBlank String title, @NotBlank String content, String tenantId) {

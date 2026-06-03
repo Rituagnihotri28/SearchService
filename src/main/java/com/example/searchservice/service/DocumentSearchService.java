@@ -4,6 +4,7 @@ import com.example.searchservice.model.Document;
 import com.example.searchservice.repository.DocumentRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -44,6 +45,7 @@ public class DocumentSearchService {
     }
 
     /** Searches documents for the tenant and returns cached or fresh results. */
+    @CircuitBreaker(name = "documentService", fallbackMethod = "fallbackSearch")
     public List<Document> search(String tenantId, String query) {
         String cacheKey = "search:" + tenantId.toLowerCase(Locale.ROOT) + ":" + query.toLowerCase(Locale.ROOT);
         String cached = redisTemplate.opsForValue().get(cacheKey);
@@ -66,14 +68,18 @@ public class DocumentSearchService {
         return results;
     }
 
-    /** Loads one document by its identifier. */
-    public Optional<Document> getById(UUID id) {
-        return repository.findById(id);
+    /** Loads one document by its identifier only if it belongs to the tenant. */
+    @CircuitBreaker(name = "documentService", fallbackMethod = "fallbackGetById")
+    public Optional<Document> getById(UUID id, String tenantId) {
+        return repository.findById(id)
+                .filter(document -> tenantId.equalsIgnoreCase(document.getTenantId()));
     }
 
-    /** Deletes a document if it exists. */
-    public boolean delete(UUID id) {
-        if (!repository.existsById(id)) {
+    /** Deletes a document only if it belongs to the tenant. */
+    @CircuitBreaker(name = "documentService", fallbackMethod = "fallbackDelete")
+    public boolean delete(UUID id, String tenantId) {
+        Optional<Document> document = repository.findById(id);
+        if (document.isEmpty() || !tenantId.equalsIgnoreCase(document.get().getTenantId())) {
             return false;
         }
         repository.deleteById(id);
@@ -87,11 +93,33 @@ public class DocumentSearchService {
     }
 
     /** Returns dependency status for PostgreSQL and Redis. */
+    @CircuitBreaker(name = "documentService", fallbackMethod = "fallbackHealth")
     public Map<String, Object> health() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("status", "ok");
         status.put("postgres", jdbcTemplate.queryForObject("select 1", Integer.class) == 1 ? "ok" : "down");
         status.put("redis", "pong".equals(redisTemplate.getConnectionFactory().getConnection().ping()) ? "ok" : "down");
+        return status;
+    }
+
+    private List<Document> fallbackSearch(String tenantId, String query, Throwable throwable) {
+        return List.of();
+    }
+
+    private Optional<Document> fallbackGetById(UUID id, String tenantId, Throwable throwable) {
+        return Optional.empty();
+    }
+
+    private boolean fallbackDelete(UUID id, String tenantId, Throwable throwable) {
+        return false;
+    }
+
+    private Map<String, Object> fallbackHealth(Throwable throwable) {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("status", "degraded");
+        status.put("postgres", "unknown");
+        status.put("redis", "unknown");
+        status.put("circuitBreaker", "open");
         return status;
     }
 
